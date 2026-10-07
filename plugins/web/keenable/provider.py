@@ -27,6 +27,31 @@ def _keenable_headers(api_key: str) -> Dict[str, str]:
     return headers
 
 
+def _log_usage(kind: str, n: int = 1) -> None:
+    """One line per Keenable request, for Houston's quota view.
+
+    Through ~/.hermes/lib/_usage_log.py so this provider's requests land in
+    the same ledger, with the same fields, as the ones made from Claude Code
+    or OpenClaw via ~/.hermes/lib/keenable.py. Best-effort in both branches:
+    a search must not fail because a log line could not be written.
+    """
+    try:
+        import os, sys
+        sys.path.insert(0, os.path.expanduser("~/.hermes/lib"))
+        import _usage_log
+        _usage_log.append("keenable", {"kind": kind, "n": n,
+                                       "label": "hermes-web", "ok": True})
+    except Exception:
+        try:
+            import json, os, time
+            path = os.path.expanduser("~/.hermes/logs/keenable-usage.jsonl")
+            with open(path, "a") as f:
+                f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                    "kind": kind, "n": n}) + "\n")
+        except Exception:
+            pass
+
+
 class KeenableWebSearchProvider(BaseWebSearchProvider):
     """Keenable search + extract provider (keyed or keyless)."""
 
@@ -39,6 +64,7 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         def _body() -> Dict[str, Any]:
             api_key = provider_env("KEENABLE_API_KEY")
+            _log_usage("search")
             if use_keyless("keenable", api_key):
                 return keyless_search("Keenable", "keenable", query, limit, logger)
             import requests
@@ -60,6 +86,7 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         def _body() -> List[Dict[str, Any]]:
             api_key = provider_env("KEENABLE_API_KEY")
+            _log_usage("extract", len(urls))
             if use_keyless("keenable", api_key):
                 return keyless_extract("Keenable", "keenable", urls, logger)
             import requests
