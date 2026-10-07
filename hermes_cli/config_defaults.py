@@ -1843,6 +1843,10 @@ DEFAULT_CONFIG = {
             # otherwise sends with disable_notification=True and briefs look undelivered). False =
             # silent, no-push deliveries.
             "notify": True,
+            # Use Telegram Bot API 10.1 Rich Messages for all Telegram-bound cron reports, even
+            # ordinary prose without a table/details block. Keeps scheduled reporting consistent
+            # without changing normal chat-message rendering.
+            "force_rich_telegram": False,
         },
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.

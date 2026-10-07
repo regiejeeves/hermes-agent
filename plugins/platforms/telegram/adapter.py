@@ -1364,7 +1364,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             and self._rich_content_ok(content))
 
     def _should_attempt_rich(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        return bool(not (metadata or {}).get("expect_edits") and self._rich_eligible(content))
+        """Choose native Rich Message transport for structural Markdown or an explicit internal request.
+
+        Cron reports opt in through ``metadata.force_rich`` so ordinary prose reports are not
+        visually downgraded to the generic MarkdownV2 cron wrapper. Normal conversations retain
+        the conservative structural-Markdown heuristic below.
+        """
+        metadata = metadata or {}
+        if metadata.get("expect_edits"):
+            return False
+        if metadata.get("force_rich"):
+            return bool(
+                self._rich_delivery_enabled()
+                and not getattr(self, "_rich_send_disabled", False)
+                and self._rich_content_ok(content)
+            )
+        return self._rich_eligible(content)
 
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Replace a streamed preview with a fresh rich final — DM topics only. Root DMs stay off (a live

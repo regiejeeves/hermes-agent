@@ -198,6 +198,9 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
     # a multi-file send or a voice note.
     media_kwargs = {**thread_kwargs, **({"caption": caption, "parse_mode": parse_mode}
                                         if caption is not None and not voice_note else {})}
+    # Long uploads are normal for video/PDF media; match the gateway's resilient
+    # Telegram timeout budget instead of letting the SDK's short default abort them.
+    media_kwargs.update({"connect_timeout": 20, "read_timeout": 180, "write_timeout": 180, "pool_timeout": 20})
     if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
         with contextlib.suppress(Exception):
             from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
@@ -256,13 +259,16 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _try_send_telegram_rich(bot, chat_id, message, *, thread_id=None, disable_link_previews=False):
+async def _try_send_telegram_rich(bot, chat_id, message, *, thread_id=None, disable_link_previews=False,
+                                  force_rich=False):
     """Standalone Rich Message delivery via the gateway adapter's semantics.
 
     Returns a result dict when a rich request was attempted, ``None`` when the caller
     should continue on the legacy MarkdownV2/HTML path. The adapter classifies Bot API
     failures: a permanent rejection falls back; an ambiguous/transient one returns an
-    error so the legacy path cannot resend and duplicate the delivery.
+    error so the legacy path cannot resend and duplicate the delivery. ``force_rich`` is the cron
+    scheduler's per-report opt-in: it skips the structural-Markdown heuristic (plain prose also goes
+    native) but still honours the adapter's content and capability guards.
     """
     try:
         from gateway.config import PlatformConfig
@@ -272,7 +278,13 @@ async def _try_send_telegram_rich(bot, chat_id, message, *, thread_id=None, disa
             enabled=True, token=None,
             extra={"rich_messages": True, "disable_link_previews": disable_link_previews}))
         adapter._bot = bot
-        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        # notify: a standalone send was never muted; the adapter's "important" mode would add
+        # disable_notification unless told otherwise.
+        metadata = {"notify": True}
+        if thread_id is not None:
+            metadata["thread_id"] = str(thread_id)
+        if force_rich:
+            metadata["force_rich"] = True
         if not adapter._should_attempt_rich(message, metadata):
             return None
     except Exception as exc:
@@ -296,7 +308,7 @@ async def _try_send_telegram_rich(bot, chat_id, message, *, thread_id=None, disa
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
-                         force_document=False, rich_messages=False):
+                         force_document=False, rich_messages=False, force_rich=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text. With ``rich_messages``,
     eligible text-only sends use the adapter's sendRichMessage; media keeps the legacy caption path."""
     try:
@@ -313,9 +325,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
         from gateway.config import _coerce_bool
-        if _coerce_bool(rich_messages, default=False) and not media_files:
+        if (force_rich or _coerce_bool(rich_messages, default=False)) and not media_files:
             rich_result = await _try_send_telegram_rich(
-                bot, chat_id, message, thread_id=thread_id, disable_link_previews=disable_link_previews)
+                bot, chat_id, message, thread_id=thread_id, disable_link_previews=disable_link_previews,
+                force_rich=force_rich)
             if rich_result is not None:
                 return rich_result
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a

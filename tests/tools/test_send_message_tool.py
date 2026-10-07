@@ -34,6 +34,7 @@ from tools.send_message_tool import (
     _send_to_platform,
     send_message_tool,
 )
+from tools.send_message_senders import _telegram_send_one_media
 from tools.send_message_targets import _parse_target_ref
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
@@ -505,6 +506,28 @@ class TestSendTelegramMediaDelivery:
 # ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch
 # ---------------------------------------------------------------------------
+
+
+class TestSendTelegramMediaTimeouts:
+    def test_media_send_uses_extended_telegram_upload_timeouts(self, tmp_path):
+        """Large media uploads keep the adapter's resilient timeout budget."""
+        seen = []
+
+        class FakeBot:
+            async def send_document(self, **kwargs):
+                seen.append(kwargs)
+                return SimpleNamespace(message_id=2)
+
+        media_path = tmp_path / "doc.pdf"
+        media_path.write_bytes(b"%PDF-1.4 test content")
+
+        result = asyncio.run(_telegram_send_one_media(
+            FakeBot(), "-100123", str(media_path), False, caption="upload", parse_mode=None,
+            has_html=False, thread_kwargs={}, force_document=False))
+
+        assert result.message_id == 2
+        assert {k: seen[0][k] for k in ("connect_timeout", "read_timeout", "write_timeout", "pool_timeout")} == {
+            "connect_timeout": 20, "read_timeout": 180, "write_timeout": 180, "pool_timeout": 20}
 
 
 class TestSendToPlatformChunking:
