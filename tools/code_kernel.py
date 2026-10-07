@@ -274,7 +274,12 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            from tools.file_tools_read_tracking import PROGRAMMATIC_CALL
+            token = PROGRAMMATIC_CALL.set(True)
+            try:
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            finally:
+                PROGRAMMATIC_CALL.reset(token)
         finally:
             if previous is not None:
                 try:

@@ -35,7 +35,7 @@ from tools.file_tools_write_guards import (
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
-    _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
+    PROGRAMMATIC_CALL, _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _known_full_content_sha256,
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
@@ -536,7 +536,8 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            programmatic: bool = False) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -553,10 +554,13 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
     with _read_tracker_lock:
-        task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
+        if programmatic:
+            count = 0  # script reads: no dedup seeding, no loop counting
+        else:
+            task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["dedup_generation_reads"].add(dedup_key)
+            count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
@@ -564,7 +568,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             pass
         baselines = task_data["full_write_baselines"]
         if stable and version is not None and count < 4:
-            task_data["dedup"][dedup_key] = version_before
+            if not programmatic:
+                task_data["dedup"][dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do
             # not revive a baseline after a partial read of a different version.
             complete = baselines.get(resolved_str) == version
@@ -579,7 +584,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
+        if not programmatic and (not stable or count >= 4):
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
@@ -680,7 +685,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # read-before-write guard needs a real read, which the stub path never records (#95976).
         file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
-        if (cached_version is not None and not is_background_review()
+        programmatic = PROGRAMMATIC_CALL.get()
+        if (cached_version is not None and not is_background_review() and not programmatic
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
@@ -738,7 +744,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None),
+                                        programmatic=programmatic)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "

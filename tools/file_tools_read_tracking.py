@@ -18,6 +18,7 @@ of this task wrote without such a baseline, for the refusal wording) and
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
+import contextvars
 import hashlib
 import logging
 import os
@@ -146,6 +147,13 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
         task_data = _task_data(task_id)
         task_data.setdefault("not_found", {})[(op, resolved_str)] = (time.monotonic(), error_json)
         _cap_read_tracker_data(task_data)
+
+
+# True while a machine-facing caller (execute_code RPC / kernel) is dispatching a tool.
+# Its read results never enter model context unless the script prints them, so a
+# "see your earlier read" dedup stub would break the documented ``content`` contract,
+# and such reads must not seed dedup state for the model-facing read_file.
+PROGRAMMATIC_CALL: contextvars.ContextVar = contextvars.ContextVar("hermes_programmatic_call", default=False)
 
 
 def _bump_consecutive(task_data: dict, key: tuple) -> int:

@@ -396,6 +396,27 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotIn("content", r2)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_programmatic_reads_always_return_content_and_do_not_seed_dedup(self, mock_ops):
+        """execute_code results are not model-visible, so a stub breaks the ``content``
+        contract; and a script read must not make the model's own first read a stub."""
+        from tools.file_tools_read_tracking import PROGRAMMATIC_CALL
+
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        token = PROGRAMMATIC_CALL.set(True)
+        try:
+            for _ in range(5):  # also past the consecutive-read BLOCK threshold
+                r = json.loads(read_file_tool(self._tmpfile, task_id="prog"))
+                self.assertIn("content", r)
+                self.assertNotIn("dedup", r)
+        finally:
+            PROGRAMMATIC_CALL.reset(token)
+        # Model-facing read afterwards still gets full content, then the usual stub.
+        first = json.loads(read_file_tool(self._tmpfile, task_id="prog"))
+        self.assertIn("content", first)
+        second = json.loads(read_file_tool(self._tmpfile, task_id="prog"))
+        self.assertTrue(second.get("dedup"))
+
+    @patch("tools.file_tools._get_file_ops")
     def test_background_review_fork_gets_content_and_read_mark_not_stub(self, mock_ops):
         """The review fork shares the parent's task_id; a dedup stub there would skip the
         read-mark its read-before-write guard requires (#95976)."""
