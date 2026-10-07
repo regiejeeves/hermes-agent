@@ -256,8 +256,49 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _try_send_telegram_rich(bot, chat_id, message, *, thread_id=None, disable_link_previews=False):
+    """Standalone Rich Message delivery via the gateway adapter's semantics.
+
+    Returns a result dict when a rich request was attempted, ``None`` when the caller
+    should continue on the legacy MarkdownV2/HTML path. The adapter classifies Bot API
+    failures: a permanent rejection falls back; an ambiguous/transient one returns an
+    error so the legacy path cannot resend and duplicate the delivery.
+    """
+    try:
+        from gateway.config import PlatformConfig
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter(PlatformConfig(
+            enabled=True, token=None,
+            extra={"rich_messages": True, "disable_link_previews": disable_link_previews}))
+        adapter._bot = bot
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        if not adapter._should_attempt_rich(message, metadata):
+            return None
+    except Exception as exc:
+        # Setup/eligibility errors precede any Bot API request: stay as reliable as before.
+        logger.debug("send_message: rich Telegram setup unavailable, using legacy path: %s",
+                     _sanitize_error_text(exc))
+        return None
+
+    # The network attempt stays outside the setup fallback above (see docstring).
+    rich_result = await adapter._try_send_rich(str(chat_id), message, reply_to=None, metadata=metadata)
+    if rich_result is None:
+        return None
+    if rich_result.success:
+        return _success("telegram", chat_id, message_id=rich_result.message_id)
+    result: dict = {"error": rich_result.error or "Telegram rich send failed"}
+    if rich_result.retryable:
+        result["retryable"] = True
+    if rich_result.retry_after is not None:
+        result["retry_after"] = rich_result.retry_after
+    return result
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, rich_messages=False):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text. With ``rich_messages``,
+    eligible text-only sends use the adapter's sendRichMessage; media keeps the legacy caption path."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -271,6 +312,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
+        from gateway.config import _coerce_bool
+        if _coerce_bool(rich_messages, default=False) and not media_files:
+            rich_result = await _try_send_telegram_rich(
+                bot, chat_id, message, thread_id=thread_id, disable_link_previews=disable_link_previews)
+            if rich_result is not None:
+                return rich_result
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
