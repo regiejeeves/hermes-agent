@@ -101,6 +101,8 @@ def _parse_signal(ref):
 
 _PLATFORM_PARSERS = {
     "telegram": _parse_telegram,
+    # pierre_mtproto (user plugin): Telegram forum targets "<chat>[:<topic>]", no @username parse.
+    "pierre_mtproto": _parse_regex_groups(_TELEGRAM_TOPIC_TARGET_RE),
     "feishu": _parse_regex_groups(_FEISHU_TARGET_RE),
     "discord": _parse_regex_groups(_NUMERIC_TOPIC_RE),  # "<channel>[:<thread>]" snowflakes
     "slack": _parse_slack,

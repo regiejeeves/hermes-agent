@@ -955,6 +955,13 @@ class TestParseTargetRef:
             assert chat_id == expected_chat, label
             assert thread_id == expected_thread, label
 
+    def test_pierre_mtproto_forum_target_preserves_topic_id(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("pierre_mtproto", "-1003978035993:10")
+
+        assert is_explicit is True
+        assert chat_id == "-1003978035993"
+        assert thread_id == "10"
+
     def test_non_explicit_targets_fall_through_to_resolution(self):
         cases = [
             ("matrix", "#general:matrix.org"),   # alias needs resolution

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.cmux_notifications import notify_api_retry_exhausted
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
@@ -1205,6 +1206,7 @@ def max_retries_exhausted_result(
         )
     else:
         agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}")
+    notify_api_retry_exhausted(attempts, platform=str(getattr(agent, "platform", "")))
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:

@@ -1557,6 +1557,33 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
+    def test_output_schema_forwarded_to_live_dispatch(self):
+        """The top-level background intercept preserves structured output."""
+        import run_agent
+
+        captured = {}
+        output_schema = {
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        }
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "produce the address",
+                    "output_schema": output_schema,
+                },
+            )
+
+        self.assertEqual(captured["output_schema"], output_schema)
+        self.assertTrue(captured["background"])
 
 
 class TestConcurrencyDefaults(unittest.TestCase):
