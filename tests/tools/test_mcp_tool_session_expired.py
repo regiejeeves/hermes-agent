@@ -14,6 +14,7 @@ import asyncio
 import json
 import threading
 import time
+import warnings
 from unittest.mock import MagicMock
 
 import pytest
@@ -211,7 +212,12 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     try:
         assert transport_ready.wait(3), "server lifecycle did not establish transport"
         handler = _make_tool_handler("resumed", "health", 10.0)
-        parsed = json.loads(handler({}))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            parsed = json.loads(handler({}))
+        assert not any(
+            "was never awaited" in str(warning.message) for warning in caught
+        ), "MCP tool calls must not discard the stdio watcher coroutine"
 
         if expected_route == "stdio":
             # A stdio pipe closing after dispatch is an ambiguous mid-call death: the transport
