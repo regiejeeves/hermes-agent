@@ -232,6 +232,19 @@ class TestGenerate:
         assert request.url.host == "codex-gw.example"
         assert request.url.path.endswith("/backend-api/codex/images/generations")
 
+    def test_gpt_image_2_5_flare_is_selected_and_sent_to_codex(self, provider, codex_backend, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-flare")
+
+        result = provider.generate("a bright orange kite")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-flare"
+        assert result["quality"] == "auto"
+        (request,) = codex_backend["requests"]
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-image-2.5-flare"
+        assert body["quality"] == "auto"
+
     def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
         local = tmp_path / "ref.png"
         local.write_bytes(_png_bytes())
