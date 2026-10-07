@@ -5820,6 +5820,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         ``message_thread_id`` == General topic ``1``)."""
         return self._extra_str_set("allowed_topics", "TELEGRAM_ALLOWED_TOPICS")
 
+    def _telegram_allowed_topics_by_chat(self) -> dict[str, set[str]]:
+        """Optional per-forum topic gate, keyed by Telegram chat ID.
+
+        Unlike legacy ``allowed_topics``, this limits only chats named in the
+        mapping, preserving existing topic behaviour in every other forum.
+        """
+        raw = self.config.extra.get("allowed_topics_by_chat")
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            logger.warning("[%s] Ignoring invalid Telegram allowed_topics_by_chat value: expected mapping", self.name)
+            return {}
+        result: dict[str, set[str]] = {}
+        for chat_id, topics in raw.items():
+            values = topics if isinstance(topics, list) else str(topics).split(",")
+            result[str(chat_id)] = {str(topic).strip() for topic in values if str(topic).strip()}
+        return result
+
     def _telegram_ignored_threads(self) -> set[int]:
         """Thread ids to skip: scoped ``TELEGRAM_IGNORED_THREADS`` → ``config.extra`` → none."""
         raw = _extra_or_secret(self.config.extra, "ignored_threads", "TELEGRAM_IGNORED_THREADS", "", blank_is_unset=False)
@@ -6120,10 +6138,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
-    def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:
-        """``allowed_topics`` / ``ignored_threads`` gates; False = blocked, None = undecided."""
+    def _topic_gates_pass(self, thread_id, *, chat_id: Optional[str] = None, warn_non_numeric: bool) -> Optional[bool]:
+        """``allowed_topics`` / ``allowed_topics_by_chat`` / ``ignored_threads`` gates; False = blocked, None = undecided."""
+        topic_id = self._topic_id_or_general(thread_id)
         allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics and self._topic_id_or_general(thread_id) not in allowed_topics:
+        if allowed_topics and topic_id not in allowed_topics:
+            return False
+        allowed_topics_by_chat = self._telegram_allowed_topics_by_chat()
+        if chat_id is not None and str(chat_id) in allowed_topics_by_chat and topic_id not in allowed_topics_by_chat[str(chat_id)]:
             return False
         if thread_id is not None:
             try:
@@ -6149,9 +6171,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Return True when a group message should be stored but not dispatched."""
         if self._is_own_message(message) or not self._telegram_observe_unmentioned_group_messages() or not self._is_group_chat(message):
             return False
-        if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
-            return False
         chat_id_str = self._chat_id_str(message)
+        if self._topic_gates_pass(getattr(message, "message_thread_id", None), chat_id=chat_id_str, warn_non_numeric=False) is False:
+            return False
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
@@ -6394,9 +6416,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
         thread_id = self._effective_message_thread_id(message)
-        if self._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
-            return False
         chat_id_str = self._chat_id_str(message)
+        if self._topic_gates_pass(thread_id, chat_id=chat_id_str, warn_non_numeric=True) is False:
+            return False
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
         # Resolve once; _message_mentions_bot is not re-called below in guest mode.
@@ -6780,7 +6802,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        # Channel posts arrive as update.channel_post, with update.message unset.
+        msg = update.message or getattr(update, "channel_post", None)
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):

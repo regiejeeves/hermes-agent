@@ -33,6 +33,7 @@ def _make_adapter(
     exclusive_bot_mentions=None,
     ignored_threads=None,
     allowed_topics=None,
+    allowed_topics_by_chat=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
@@ -64,6 +65,8 @@ def _make_adapter(
         # environment; production adapters without this explicit key still fall
         # back to the env var.
         extra["allowed_topics"] = []
+    if allowed_topics_by_chat is not None:
+        extra["allowed_topics_by_chat"] = allowed_topics_by_chat
     if allow_from is not None:
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
@@ -459,6 +462,18 @@ def test_allowed_topics_drop_other_forum_topics_before_other_gates():
     ) is False
 
 
+def test_allowed_topics_by_chat_gates_only_the_configured_forum():
+    adapter = _make_adapter(
+        require_mention=False,
+        allowed_chats=["-100", "-200"],
+        allowed_topics_by_chat={"-200": ["31"]},
+    )
+
+    assert adapter._should_process_message(_group_message("existing forum", chat_id=-100, thread_id=8)) is True
+    assert adapter._should_process_message(_group_message("pilot topic", chat_id=-200, thread_id=31)) is True
+    assert adapter._should_process_message(_group_message("other pilot forum topic", chat_id=-200, thread_id=32)) is False
+
+
 def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):
     """Build a message with independently-controlled topic/forum flags.
 
@@ -561,7 +576,10 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  group_allowed_chats:\n"
         "    - \"-100\"\n"
         "  allowed_topics:\n"
-        "    - 8\n",
+        "    - 8\n"
+        "  allowed_topics_by_chat:\n"
+        "    '-200':\n"
+        "      - 31\n",
         encoding="utf-8",
     )
 
@@ -604,6 +622,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert tg_cfg.extra.get("allowed_topics_by_chat") == {"-200": [31]}
     # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
     # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
     # files, so asserting it via os.environ stays deterministic.
